@@ -1,0 +1,29 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": ".NET Core Launch (console)", // Or any descriptive name you like
+            "type": "coreclr",                   // Use 'coreclr' for .NET Core / .NET 5+
+            "request": "launch",
+            "preLaunchTask": "dotnet: build",             // Assumes you have a build task configured (usually default)
+            // IMPORTANT: Update the path below to match your project's output DLL
+            "program": "${workspaceFolder}/bin/Debug/net9.0/Snapshot.dll",
+            "args": [
+                "export",
+                "D:\\Dev\\VS-2022\\Snapshot2",
+                "D:\\Dev\\VS-2022\\Snapshot2\\test.tlv",
+                "--ai"
+            ],                           // Command line arguments, if any
+            "cwd": "${workspaceFolder}",          // Working directory
+            "console": "internalConsole",         // Options: internalConsole, integratedTerminal, externalTerminal
+            "stopAtEntry": false ,                // Set to true to stop at the very beginning of your Main method
+            "pipeTransport": {
+                "pipeProgram": "cmd",
+                "pipeArgs": ["/c"],
+                "debuggerPath": "C:\\Tools\\netcoredbg\\netcoredbg.exe",
+                "quoteArgs": true
+              }
+        }
+        // You can add more configurations here if needed (e.g., for attaching)
+    ]
+}
