@@ -167,7 +167,7 @@ CHK 128 e3b0c44298fc1c149afbf4c8996fb924... (full SHA3-512 hex)
 
 ---
 
-## Notes & Best Practices
+## Notes 
 
 - Wrap the snapshot body in `-----BEGIN TLV SNAPSHOT-----` / `-----END TLV SNAPSHOT-----` **in your email template**, not inside the TLV file itself.
 - Always normalize text to UTF-8 to avoid encoding issues.
