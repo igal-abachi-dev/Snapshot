@@ -3,73 +3,138 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace SnapshotWebApi
 {
     public static class RepoUtils
     {
-        // Only the fields we care about:
-        class RepoInfo
+        private class RepoInfo
         {
             public string Archive_url { get; set; }
             public string Default_branch { get; set; }
+            // Add more fields if needed
         }
 
         private static readonly JsonSerializerOptions _jsonOpts =
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
 
         /// <summary>
-        /// Downloads & extracts a GitHub repo by reading its own `archive_url` + `default_branch`.
-        /// Returns the filesystem path to the repo root.
+        /// Downloads and extracts a GitHub repository ZIP snapshot using the GitHub API.
+        /// Caller is responsible for cleaning up the returned directory unless 'autoCleanup' is true.
         /// </summary>
-        public static async Task<string> CloneOrDownloadFromGitHubAsync(
-            HttpClient http, string owner, string repo)
+        /// <param name="http">HttpClient to use (caller retains ownership)</param>
+        /// <param name="owner">GitHub owner/org</param>
+        /// <param name="repo">GitHub repository name</param>
+        /// <param name="githubToken">Optional GitHub token for higher rate limits</param>
+        /// <param name="autoCleanup">If true, temp folder will be deleted on disposal</param>
+        /// <returns>Tuple: path to extracted repo root, disposable cleanup handle</returns>
+        public static async Task<(string Path, IDisposable Cleanup)> DownloadGitHubRepoSnapshotAsync(
+            HttpClient http,
+            string owner,
+            string repo,
+            string? githubToken = null,
+            bool autoCleanup = false,
+            CancellationToken cancellationToken = default)
         {
-            // 1) fetch /repos/{owner}/{repo}
+            if (string.IsNullOrEmpty(owner)) throw new ArgumentNullException(nameof(owner));
+            if (string.IsNullOrEmpty(repo)) throw new ArgumentNullException(nameof(repo));
+
+            // --- Step 1: Fetch repo metadata ---
             var repoApi = $"https://api.github.com/repos/{owner}/{repo}";
             using var infoReq = new HttpRequestMessage(HttpMethod.Get, repoApi);
             infoReq.Headers.UserAgent.ParseAdd("SnapshotWebApi");
-            using var infoRes = await http.SendAsync(infoReq, HttpCompletionOption.ResponseHeadersRead);
-            infoRes.EnsureSuccessStatusCode();
-            var info = await infoRes.Content.ReadFromJsonAsync<RepoInfo>(_jsonOpts)
-                       ?? throw new Exception("Failed to parse repo info");
+            infoReq.Headers.Accept.ParseAdd("application/vnd.github.v3+json");
 
-            // 2) build the ZIP URL
-            string branch = info.Default_branch;
-            string template = info.Archive_url; 
-            // e.g. "https://api.github.com/repos/:owner/:repo/{archive_format}{/ref}"
-            var zipUrl = template.Replace("{archive_format}{/ref}", $"zipball/{branch}");
+            if (!string.IsNullOrEmpty(githubToken))
+                infoReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", githubToken);
 
-            // 3) try download
-            HttpResponseMessage archiveRes = null!;
-            foreach (var candidate in new[] { zipUrl, template.Replace("{archive_format}{/ref}", $"tarball/{branch}") })
+            using var infoRes = await http.SendAsync(infoReq, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+            try
             {
-                using var req = new HttpRequestMessage(HttpMethod.Get, candidate);
-                req.Headers.UserAgent.ParseAdd("SnapshotWebApi");
-                var res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
-                if (res.IsSuccessStatusCode)
-                {
-                    archiveRes = res;
-                    break;
-                }
-                res.Dispose();
+                infoRes.EnsureSuccessStatusCode();
             }
-            if (archiveRes == null) 
-                throw new Exception("Could not download repo archive");
+            catch (HttpRequestException ex)
+            {
+                var baseMessage = $"GitHub API error for {owner}/{repo}. Status: {infoRes.StatusCode}";
 
-            // 4) extract to a temp dir
-            var temp = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
-            Directory.CreateDirectory(temp);
-            await using (var stream = await archiveRes.Content.ReadAsStreamAsync())
-            using (var zip = new ZipArchive(stream, ZipArchiveMode.Read))
-                zip.ExtractToDirectory(temp);
+                if (infoRes.Headers.TryGetValues("X-RateLimit-Remaining", out var remainingVals) &&
+                    remainingVals.FirstOrDefault() == "0")
+                {
+                    if (infoRes.Headers.TryGetValues("X-RateLimit-Reset", out var resetVals) &&
+                        long.TryParse(resetVals.FirstOrDefault(), out var resetTime))
+                    {
+                        var resetDate = DateTimeOffset.FromUnixTimeSeconds(resetTime).ToLocalTime();
+                        throw new HttpRequestException($"{baseMessage}. Rate limit exceeded. Resets at {resetDate}.", ex);
+                    }
 
-            // GitHub always wraps content under one top-level folder
-            var root = Directory.GetDirectories(temp).FirstOrDefault() ?? temp;
-            return root;
+                    throw new HttpRequestException($"{baseMessage}. Rate limit exceeded.", ex);
+                }
+
+                throw new HttpRequestException(baseMessage, ex);
+            }
+
+            var info = await infoRes.Content.ReadFromJsonAsync<RepoInfo>(_jsonOpts, cancellationToken)
+                       ?? throw new JsonException($"Failed to parse GitHub repo info for {owner}/{repo}");
+
+            var branch = info.Default_branch;
+            var zipUrl = info.Archive_url.Replace("{archive_format}{/ref}", $"zipball/{branch}");
+
+            // --- Step 2: Download archive ---
+            using var req = new HttpRequestMessage(HttpMethod.Get, zipUrl);
+            req.Headers.UserAgent.ParseAdd("SnapshotWebApi");
+            if (!string.IsNullOrEmpty(githubToken))
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", githubToken);
+
+            using var archiveRes = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (!archiveRes.IsSuccessStatusCode)
+                throw new HttpRequestException($"Failed to download repo snapshot. Status: {archiveRes.StatusCode}");
+
+            // --- Step 3: Extract ---
+            string baseTemp = Path.Combine(Path.GetTempPath(), "SnapshotTemp", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(baseTemp);
+
+            try
+            {
+                await using var stream = await archiveRes.Content.ReadAsStreamAsync(cancellationToken);
+                using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
+                archive.ExtractToDirectory(baseTemp);
+
+                string rootDir = Directory.GetDirectories(baseTemp).FirstOrDefault() ?? baseTemp;
+
+                return (rootDir, autoCleanup ? new TempDirectoryDisposer(baseTemp) : NoopDisposer.Instance);
+            }
+            catch (Exception ex)
+            {
+                try { if (Directory.Exists(baseTemp)) Directory.Delete(baseTemp, true); } catch { }
+                throw new IOException($"Failed to extract GitHub archive for {owner}/{repo}", ex);
+            }
+        }
+
+        private sealed class TempDirectoryDisposer : IDisposable
+        {
+            private readonly string _path;
+            private bool _disposed;
+
+            public TempDirectoryDisposer(string path) => _path = path;
+
+            public void Dispose()
+            {
+                if (_disposed) return;
+                try { if (Directory.Exists(_path)) Directory.Delete(_path, true); } catch { }
+                _disposed = true;
+            }
+        }
+
+        private sealed class NoopDisposer : IDisposable
+        {
+            public static readonly NoopDisposer Instance = new();
+            public void Dispose() { }
         }
     }
 }
