@@ -45,7 +45,13 @@ app.Use(async (context, next) => {
     logger.LogInformation("Response: {StatusCode} in {ElapsedMs}ms", 
         context.Response.StatusCode, elapsed.TotalMilliseconds);
 });
-
+app.Use(async (ctx, next) =>
+{
+    ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    ctx.Response.Headers["X-Frame-Options"] = "DENY";
+    ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
+    await next();
+});
 app.UseCors(policy => 
     policy.AllowAnyOrigin()
           .AllowAnyMethod()
@@ -62,7 +68,13 @@ app.MapMethods("/{owner}/{repo}", new[] { "HEAD" }, ctx =>
     ctx.Response.StatusCode = 204; // No Content
     return Task.CompletedTask;
 });
-
+app.MapMethods("/{owner}/{repo}", new[] { "OPTIONS" }, ctx =>
+{
+    ctx.Response.StatusCode = 204;
+    return Task.CompletedTask;
+});
+app.MapGet("/robots.txt", () =>
+    Results.Text("User-agent: *\nAllow: /", "text/plain"));
 app.Run();
 
 static RequestDelegate ExportHandler(bool ai, bool b64) =>
