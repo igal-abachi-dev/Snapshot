@@ -1,20 +1,25 @@
-# Use official .NET 9 SDK for build
+# Build stage
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /app
 
-# Copy csproj and restore as distinct layers
-COPY *.csproj ./
+# Copy and restore all projects (handles multi-csproj solutions too)
+COPY *.sln ./
+COPY SnapshotWebApi/*.csproj ./SnapshotWebApi/
 RUN dotnet restore
 
-# Copy everything else and build
+# Copy the full source tree
 COPY . ./
-RUN dotnet publish -c Release -o out
 
-# Runtime image
+# Build and publish release
+RUN dotnet publish SnapshotWebApi.csproj -c Release -o /app/out
+
+# Runtime stage
 FROM mcr.microsoft.com/dotnet/aspnet:9.0
 WORKDIR /app
 COPY --from=build /app/out ./
 
-# Expose port (Render uses PORT env var)
+# Set environment port for Render
 ENV ASPNETCORE_URLS=http://+:8080
+EXPOSE 8080
+
 ENTRYPOINT ["dotnet", "SnapshotWebApi.dll"]
