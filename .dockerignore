@@ -1,5 +1,11 @@
-bin/
-obj/
+**/bin/
+**/obj/
 .vscode/
 .git/
 *.user
+*.suo
+*.db
+*.sqlite
+*.log
+*.DS_Store
+.env
