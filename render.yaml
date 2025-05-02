@@ -4,4 +4,12 @@ services:
     env: docker
     plan: free
     autoDeploy: true
-    dockerfilePath: ./Dockerfile
+    region: frankfurt
+    buildFilter:
+      paths:
+        - Dockerfile
+        - SnapshotWebApi/*
+        - SnapshotLib/*
+ #   envVars:
+ #     - key: GITHUB_TOKEN
+ #       sync: false  # Set this in the dashboard for security
