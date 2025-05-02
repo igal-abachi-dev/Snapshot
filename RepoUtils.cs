@@ -16,8 +16,8 @@ namespace SnapshotWebApi
 
 private class RepoInfo
 {
-    public string Archive_url { get; set; }
-    public string Default_branch { get; set; }
+    public string Archive_url { get; set; } = "";
+    public string Default_branch { get; set; } = "";
 
     public bool Private { get; set; }
     public long Size { get; set; } // in KB
