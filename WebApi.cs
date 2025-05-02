@@ -29,6 +29,7 @@ builder.Services.AddHttpClient("github", c => {
 
 // Add logging
 builder.Services.AddLogging();
+builder.Services.AddCors();
 
 var app = builder.Build();
 
@@ -45,10 +46,22 @@ app.Use(async (context, next) => {
         context.Response.StatusCode, elapsed.TotalMilliseconds);
 });
 
+app.UseCors(policy => 
+    policy.AllowAnyOrigin()
+          .AllowAnyMethod()
+          .AllowAnyHeader());
+
 // Minimal routing with flags
 app.MapGet("/ai/{owner}/{repo}", ExportHandler(ai: true, b64: false));
 app.MapGet("/b64/{owner}/{repo}", ExportHandler(ai: false, b64: true));
 app.MapGet("/{owner}/{repo}", ExportHandler(ai: false, b64: false));
+
+// HEAD request for CDN preflight or bots
+app.MapMethods("/{owner}/{repo}", new[] { "HEAD" }, ctx =>
+{
+    ctx.Response.StatusCode = 204; // No Content
+    return Task.CompletedTask;
+});
 
 app.Run();
 
